@@ -5,12 +5,11 @@ import torch.nn.functional as F
 VOCAB_SIZE = 50257
 
 class RecurrentBackbone(nn.Module):
-    def __init__(self, device, hidden_dim, num_layers=2):
+    def __init__(self, hidden_dim, num_layers=2):
         super().__init__()
         self.embedding = nn.Embedding(VOCAB_SIZE, hidden_dim)
         self.rnn = nn.RNN(hidden_dim, hidden_dim, num_layers=num_layers, batch_first=True)
         self.out = nn.Linear(hidden_dim, VOCAB_SIZE)
-        self.device = device
 
     def forward(self, input_ids):
         x = self.embedding(input_ids)  # [batch_size, seq_len, hidden_size]
@@ -45,14 +44,14 @@ class LinearAttentionLayer(nn.Module):
         return self.out(context)
     
 class LinearAttentionBackbone(nn.Module):
-    def __init__(self, device, hidden_dim, num_layers=2):
+    def __init__(self, hidden_dim, num_layers=2):
         super().__init__()
-        self.device = device
         self.hidden_dim = hidden_dim
         self.output_dim = hidden_dim
 
         self.embedding = nn.Embedding(VOCAB_SIZE, hidden_dim)  # GPT-2 vocab size
         self.layers = nn.ModuleList([LinearAttentionLayer(hidden_dim) for _ in range(num_layers)])
+        self.lm_head = nn.Linear(hidden_dim, VOCAB_SIZE)
 
     def forward(self, input_ids):
         x = self.embedding(input_ids)
@@ -60,10 +59,11 @@ class LinearAttentionBackbone(nn.Module):
             x = layer(x)
 
         token_embeddings = x
+        logits = self.lm_head(token_embeddings)
         pooled_output = x[:, -1]  # Use last token for pooled_output
         # pooled_output = x.mean(dim=1) # Mean pooling
 
-        return token_embeddings, pooled_output
+        return logits, pooled_output
 
 class HopfieldAttentionLayer(nn.Module):
     def __init__(self, hidden_dim):
@@ -87,14 +87,14 @@ class HopfieldAttentionLayer(nn.Module):
         return self.out_proj(context)
 
 class HopfieldAttentionBackbone(nn.Module):
-    def __init__(self, device, hidden_dim, num_layers=2):
+    def __init__(self, hidden_dim, num_layers=2):
         super().__init__()
-        self.device = device
         self.hidden_dim = hidden_dim
         self.output_dim = hidden_dim
 
         self.embedding = nn.Embedding(VOCAB_SIZE, hidden_dim)
         self.layers = nn.ModuleList([HopfieldAttentionLayer(hidden_dim) for _ in range(num_layers)])
+        self.lm_head = nn.Linear(hidden_dim, VOCAB_SIZE)
 
     def forward(self, input_ids):
         x = self.embedding(input_ids)
@@ -102,10 +102,10 @@ class HopfieldAttentionBackbone(nn.Module):
             x = layer(x)
 
         token_embeddings = x
-        pooled_output = x[:, -1]  # Use last token for pooled_output
-        # pooled_output = x.mean(dim=1) # Mean pooling
+        logits = self.lm_head(token_embeddings)
+        pooled_output = x.mean(dim=1) # Mean pooling
 
-        return token_embeddings, pooled_output
+        return logits, pooled_output
 
 class NextTokenPredictor(nn.Module):
     def __init__(self, backbone):
