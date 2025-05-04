@@ -13,7 +13,7 @@ hardware:
   device: "cuda"      # Device to run on (cuda/cpu)
 
 benchmark:
-  name: "lambada"     # Options: lambada, wikitext, memory, lra
+  name: "memcopy"     # Options: lambada, wikitext, memcopy, lra
 
 logging:
   project_name: "language_model_benchmarks"

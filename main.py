@@ -42,12 +42,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
     parser.add_argument('--sweep')
+    parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
+
+    if args.debug:
+        print("Running in DEBUG mode. Wandb logging will not occur.")
+        from datasets import disable_caching; disable_caching() # disable dataset caching on map
 
     with open(args.config, 'rb') as f:
         conf = yaml.safe_load(f.read())
+        conf['debug'] = args.debug
 
-    if args.sweep:
+    if args.sweep and not args.debug:
         with open(args.sweep, 'rb') as f:
             sweep_conf = yaml.safe_load(f.read())
 
@@ -55,9 +61,9 @@ if __name__ == "__main__":
 
         # Define sweep run function
         def sweep_experiment():
+            _ = wandb.init()
             exp_conf = dict(wandb.config)
             merged_conf = recursive_update(conf.copy(), exp_conf)
-            merged_conf['run'] = wandb.run
             run_experiment(merged_conf)
 
         # Launch sweep agent
@@ -73,6 +79,7 @@ if __name__ == "__main__":
             config=conf,
             group=conf['benchmark']['name'],
             tags=[conf['benchmark']['name'], conf['model']['name']],
+            mode='disabled' if args.debug else 'online'
         )
         run_experiment(conf)
         wandb.finish()
