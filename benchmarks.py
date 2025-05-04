@@ -349,17 +349,20 @@ class WikiText(Benchmark):
 
 class MemoryCopyingDataset(Dataset):
     def __init__(self, tokenizer, sequence_length, n_samples, seed=42):
+        self.tokenizer = tokenizer
         self.vocab_size = tokenizer.vocab_size
         self.seq_len = sequence_length
         self.n = n_samples
         self.rng = np.random.RandomState(seed)
 
+        self.copy_signal_token = tokenizer.bos_token_id
+
     def __len__(self):
         return self.n
 
     def __getitem__(self, idx):
-        prefix = self.rng.randint(0, self.vocab_size, size=self.seq_len//2).tolist()
-        full = prefix + prefix
+        prefix = self.rng.randint(1, self.vocab_size, size=self.seq_len // 2 - 1).tolist()
+        full = prefix + [self.copy_signal_token] + prefix
         return {"input_ids": full}
 
 class MemoryCopying(Benchmark):
@@ -370,7 +373,7 @@ class MemoryCopying(Benchmark):
 
     def _prepare_dataloader(self, split: str, shuffle: bool):
         if split == "train":
-            n, seed = (10000, 4321) if self.config['debug'] else (40000, 42)
+            n, seed = (10000, 4321) if self.config['debug'] else (100000, 42)
         else:
             n, seed = 10000, 1234
 
@@ -486,6 +489,7 @@ class DataCollatorForMemoryCopy():
     def __init__(self, tokenizer, max_length):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.copy_signal_token = tokenizer.bos_token_id
         self.padding_collator = DataCollatorWithPadding(
             tokenizer=tokenizer,
             padding="max_length",
@@ -495,15 +499,21 @@ class DataCollatorForMemoryCopy():
 
     def __call__(self, examples):
         batch = self.padding_collator([{"input_ids": ex["input_ids"]} for ex in examples])
-        orig   = batch["input_ids"]
-        inp    = orig.clone()
-        labels = inp.clone().fill_(self.tokenizer.pad_token_id)
+        input_ids = batch["input_ids"]
+        labels = input_ids.clone().fill_(self.tokenizer.pad_token_id)
 
-        inp[:, self.max_length//2:] = self.tokenizer.pad_token_id
-        labels[:, :self.max_length//2]  = self.tokenizer.pad_token_id
-        labels[:, self.max_length//2:] = orig[:, self.max_length//2:]
+        for i in range(input_ids.size(0)):
+            sequence = input_ids[i]
+            signal_positions = (sequence == self.copy_signal_token).nonzero(as_tuple=True)[0]
 
-        return {"input_ids": inp, "labels": labels}
+            if len(signal_positions) > 0:
+                signal_idx = signal_positions[0].item()
+                copy_start = signal_idx + 1
 
+                if copy_start < input_ids.size(1):
+                    labels[i, copy_start:] = input_ids[i, copy_start:]
+                    input_ids[i, copy_start:] = self.tokenizer.pad_token_id
+
+        return {"input_ids": input_ids, "labels": labels}
             
 
