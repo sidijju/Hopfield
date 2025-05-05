@@ -17,4 +17,4 @@ parameters:
     parameters:
       name:
         # ["lambada", "wikitext", "memcopy", "lra"]
-        values: ["lambada"]
+        values: ["memcopy"]
