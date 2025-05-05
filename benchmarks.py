@@ -48,7 +48,7 @@ class Benchmark():
             epoch_loss, epoch_correct, epoch_total = 0, 0, 0
 
             for step, batch in enumerate(tqdm(dataloader)):
-                if random.random() < 0.75:
+                if random.random() < 0.9:
                     continue
 
                 input_ids, labels = batch["input_ids"], batch["labels"]
