@@ -6,7 +6,7 @@ model:
 training:
   batch_size: 4       # Batch size for training and evaluation
   epochs: 3           # Number of training epochs
-  sequence_length: 8192 # Maximum sequence length 1024
+  sequence_length: 8192 # Maximum sequence length
   learning_rate: 5e-5 # Learning rate for optimizer
 
 hardware:

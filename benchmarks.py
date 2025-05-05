@@ -1,4 +1,5 @@
 import torch
+import gc
 import re
 import spacy
 import torch.nn as nn
@@ -6,6 +7,7 @@ import torch.optim as optim
 import numpy as np
 import wandb
 from tqdm import tqdm
+import random
 import pickle
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader
@@ -46,6 +48,9 @@ class Benchmark():
             epoch_loss, epoch_correct, epoch_total = 0, 0, 0
 
             for step, batch in enumerate(tqdm(dataloader)):
+                if random.random() < 0.75:
+                    continue
+
                 input_ids, labels = batch["input_ids"], batch["labels"]
                 input_ids = input_ids.to(self.config['hardware']['device'])
                 labels = labels.to(self.config['hardware']['device'])
@@ -118,6 +123,10 @@ class Benchmark():
 
     def run_benchmark(self):
         raise NotImplementedError
+    
+    def cleanup(self):
+        torch.cuda.empty_cache()
+        gc.collect()
 
 class LAMBADA(Benchmark):
     def __init__(self, args):
@@ -185,6 +194,8 @@ class LAMBADA(Benchmark):
         self.test_dataloader = self._prepare_test_dataloader()
         self.evaluate(model, self.test_dataloader, "default")
         del self.test_dataloader
+
+        self.cleanup()
 
 class WikiText(Benchmark):
     def __init__(self, args):
@@ -305,6 +316,8 @@ class WikiText(Benchmark):
         self.evaluate(model, self.test_dataloader, "default")
         del self.test_dataloader
 
+        self.cleanup()
+
 class MemoryCopyingDataset(Dataset):
     def __init__(self, tokenizer, sequence_length, n_samples, seed=42):
         self.tokenizer = tokenizer
@@ -357,6 +370,8 @@ class MemoryCopying(Benchmark):
         self.test_dataloader = self._prepare_dataloader("test", shuffle=False)
         self.evaluate(model, self.test_dataloader, "default")
         del self.test_dataloader
+
+        self.cleanup()
 
 class LRA(Benchmark):
     def __init__(self, args):
@@ -418,6 +433,7 @@ class LRA(Benchmark):
             del test_dataloader
 
             del model
+            self.cleanup()
 
 ## Collators
 

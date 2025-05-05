@@ -16,4 +16,5 @@ parameters:
   benchmark:
     parameters:
       name:
-        values: ["lambada", "wikitext", "memcopy", "lra"]
+        # ["lambada", "wikitext", "memcopy", "lra"]
+        values: ["lambada"]
