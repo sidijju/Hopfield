@@ -6,8 +6,10 @@ import torch.optim as optim
 import numpy as np
 import wandb
 from tqdm import tqdm
+import pickle
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader
+from datasets import Dataset as hf_Dataset
 
 from transformers import AutoTokenizer, DataCollatorWithPadding
 from networks import NextTokenPredictor, SequenceClassifier
@@ -20,13 +22,29 @@ class Benchmark():
         self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
-    def train(self, model, dataloader, lr=1e-3):
-        optimizer = optim.Adam(model.parameters(), lr=lr)
+    def calculate_batch_metrics(self, logits, labels):
+        if labels.dim() == 1 or logits.dim() == 2:
+            predictions = logits.argmax(dim=1)
+            correct = (predictions == labels).sum().item()
+            total = labels.size(0)
+        else:
+            predictions = logits.argmax(dim=-1).view(-1)
+            labels = labels.view(-1)
+            mask = labels != self.tokenizer.pad_token_id
+            correct = (predictions == labels)[mask].sum().item()
+            total = mask.sum().item()
+
+        accuracy = 100.0 * correct / total if total > 0 else 0.0
+        return accuracy, correct, total
+
+    def train(self, model, dataloader, task_name=None):
+        optimizer = optim.Adam(model.parameters(), lr=float(self.config['training']['learning_rate']))
         loss_fn = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
         model.train()
 
         for epoch in range(self.config['training']['epochs']):
-            total_loss = 0
+            epoch_loss, epoch_correct, epoch_total = 0, 0, 0
+
             for step, batch in enumerate(tqdm(dataloader)):
                 input_ids, labels = batch["input_ids"], batch["labels"]
                 input_ids = input_ids.to(self.config['hardware']['device'])
@@ -35,33 +53,45 @@ class Benchmark():
                 optimizer.zero_grad()
                 logits = model(input_ids)
 
+                batch_accuracy, batch_correct, batch_total = self.calculate_batch_metrics(logits, labels)
+
                 logits = logits.view(-1, logits.shape[-1])
                 labels = labels.view(-1)
 
-                loss = loss_fn(logits, labels)
+
+                mask = labels != self.tokenizer.pad_token_id    
+                loss = loss_fn(logits[mask], labels[mask])
 
                 loss.backward()
+
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
-                
-                if step % 10 == 0:  
+            
+                epoch_correct += batch_correct
+                epoch_total += batch_total
+                epoch_loss += loss.item()
+
+                if step % 10 == 0:
                     wandb.log({
-                        "batch_loss": loss.item(),
-                        "epoch": epoch + (step / len(dataloader))
+                        f"{task_name}/epoch": epoch + (step / len(dataloader)),
+                        f"{task_name}/batch_loss": loss.item(),
+                        f"{task_name}/batch_accuracy": batch_accuracy
                     })
 
-                total_loss += loss.item()
+            epoch_avg_loss = epoch_loss / len(dataloader)
+            epoch_accuracy = 100.0 * epoch_correct / epoch_total
 
-            avg_loss = total_loss / len(dataloader)
             wandb.log({
-                "epoch": epoch + 1,
-                "epoch_loss": avg_loss
+                f"{task_name}/epoch": epoch + 1,
+                f"{task_name}/epoch_loss": epoch_avg_loss,
+                f"{task_name}/epoch_accuracy": epoch_accuracy
             })
-            print(f"Epoch {epoch+1}/{self.config['training']['epochs']} | Loss: {avg_loss:.4f}")
+            
+            print(f"{task_name} | Epoch {epoch+1}/{self.config['training']['epochs']} | Loss: {epoch_avg_loss / len(dataloader):.4f} | Accuracy: {epoch_accuracy:.2f}%")
 
-    def evaluate(self, model, dataloader):
+    def evaluate(self, model, dataloader, task_name):
         model.eval()
-        total_tokens = 0
-        correct_tokens = 0
+        total, correct = 0, 0
 
         with torch.no_grad():
             for batch in tqdm(dataloader):
@@ -70,93 +100,21 @@ class Benchmark():
                 labels = labels.to(self.config['hardware']['device'])
 
                 logits = model(input_ids)
-                predictions = logits.argmax(-1)
+                _, batch_correct, batch_total = self.calculate_batch_metrics(logits, labels)
 
-                mask = (labels != self.tokenizer.pad_token_id)
-                correct = (predictions == labels) & mask
-
-                total_tokens += mask.sum().item()
-                correct_tokens += correct.sum().item()
-
-        accuracy = 100.0 * correct_tokens / total_tokens
-        wandb.log({
-            "test_accuracy": accuracy,
-            "total_tokens": total_tokens,
-            "correct_tokens": correct_tokens
-        })
-        wandb.run.summary.update({
-            "final_accuracy": accuracy
-        })
-        print(f"Top-1 accuracy: {accuracy:.2f}%")
-
-    def train_sequence_classifier(self, model, dataloader, lr=1e-3):
-        optimizer = optim.Adam(model.parameters(), lr=lr)
-        loss_fn = nn.CrossEntropyLoss()
-        model.train()
-
-        for epoch in range(self.config['training']['epochs']):
-            total_loss = 0
-            correct = 0
-            total = 0
-
-            for step, (input_ids, labels) in enumerate(tqdm(dataloader)):
-                input_ids = input_ids.to(self.config['hardware']['device'])
-                labels = labels.to(self.config['hardware']['device'])
-
-                optimizer.zero_grad()
-                logits = model(input_ids)  # [batch_size, num_classes]
-                loss = loss_fn(logits, labels)
-                loss.backward()
-                optimizer.step()
-
-                total_loss += loss.item()
-                predictions = logits.argmax(dim=1)
-                correct += (predictions == labels).sum().item()
-                total += labels.size(0)
-
-                if step % 10 == 0:
-                    batch_accuracy = 100.0 * (predictions == labels).sum().item() / labels.size(0)
-                    wandb.log({
-                        "epoch": epoch + (step / len(dataloader)),
-                        "batch_loss": loss.item(),
-                        "batch_accuracy": batch_accuracy
-                    })
-
-            accuracy = 100.0 * correct / total
-            avg_loss = total_loss / len(dataloader)
-            wandb.log({
-                "epoch": epoch + 1,
-                "epoch_loss": avg_loss,
-                "epoch_accuracy": accuracy
-            })
-            print(f"Epoch {epoch+1}/{self.config['training']['epochs']} | Loss: {avg_loss:.4f} | Accuracy: {accuracy:.2f}%")
-
-    def evaluate_sequence_classifier(self, model, dataloader):
-        model.eval()
-        correct = 0
-        total = 0
-
-        with torch.no_grad():
-            for input_ids, labels in dataloader:
-                input_ids = input_ids.to(self.config['hardware']['device'])
-                labels = labels.to(self.config['hardware']['device'])
-
-                logits = model(input_ids)
-                preds = logits.argmax(dim=1)
-
-                correct += (preds == labels).sum().item()
-                total += labels.size(0)
+                correct += batch_correct
+                total += batch_total
 
         accuracy = 100.0 * correct / total
         wandb.log({
-            "test_accuracy": accuracy,
-            "total_samples": total,
-            "correct_predictions": correct
+            f"{task_name}/test_accuracy": accuracy,
+            f"{task_name}/total_samples": total,
+            f"{task_name}/correct_predictions": correct
         })
         wandb.run.summary.update({
-            "final_accuracy": accuracy
+            f"{task_name}/final_accuracy": accuracy
         })
-        print(f"Accuracy: {accuracy:.2f}%")
+        print(f"{task_name} | Accuracy: {accuracy:.2f}%")
 
     def run_benchmark(self):
         raise NotImplementedError
@@ -221,11 +179,11 @@ class LAMBADA(Benchmark):
         model = NextTokenPredictor(backbone).to(self.config['hardware']['device'])
 
         self.train_dataloader = self._prepare_train_dataloader()
-        self.train(model, self.train_dataloader)
+        self.train(model, self.train_dataloader, "default")
         del self.train_dataloader
 
         self.test_dataloader = self._prepare_test_dataloader()
-        self.evaluate(model, self.test_dataloader)
+        self.evaluate(model, self.test_dataloader, "default")
         del self.test_dataloader
 
 class WikiText(Benchmark):
@@ -340,11 +298,11 @@ class WikiText(Benchmark):
         model = NextTokenPredictor(backbone).to(self.config['hardware']['device'])
 
         self.train_dataloader = self._prepare_train_dataloader()
-        self.train(model, self.train_dataloader)
+        self.train(model, self.train_dataloader, "default")
         del self.train_dataloader
 
         self.test_dataloader = self._prepare_test_dataloader()
-        self.evaluate(model, self.test_dataloader)
+        self.evaluate(model, self.test_dataloader, "default")
         del self.test_dataloader
 
 class MemoryCopyingDataset(Dataset):
@@ -389,33 +347,77 @@ class MemoryCopying(Benchmark):
                           shuffle=shuffle,
                           collate_fn=self.collator)
 
-    def _prepare_train_dataloader(self):
-        return self._prepare_dataloader("train", shuffle=True)
-
-    def _prepare_test_dataloader(self):
-        return self._prepare_dataloader("test",  shuffle=False)
-
     def run_benchmark(self, backbone):
         model = NextTokenPredictor(backbone).to(self.config["hardware"]["device"])
 
-        self.train_dataloader = self._prepare_train_dataloader()
-        self.train(model, self.train_dataloader)
+        self.train_dataloader = self._prepare_dataloader("train", shuffle=True)
+        self.train(model, self.train_dataloader, "default")
         del self.train_dataloader
 
-        self.test_dataloader = self._prepare_test_dataloader()
-        self.evaluate(model, self.test_dataloader)
+        self.test_dataloader = self._prepare_dataloader("test", shuffle=False)
+        self.evaluate(model, self.test_dataloader, "default")
         del self.test_dataloader
 
 class LRA(Benchmark):
-        # Input = tokens[0: n]
-        # Target = classification logits (depends on subtask)
+    def __init__(self, args):
+        super().__init__(args) 
 
-    def init(self, args):
-        super().init(args)
+        self.collator = DataCollatorForLongRangeArena(self.tokenizer, self.config['training']['sequence_length'])
 
-    def run_benchmark(self, backbone):
-        raise NotImplementedError
+    def _prepare_dataloader(self, subset: str, split: str, shuffle: bool):
+        match subset:
+            case 'image':
+                subpath = 'lra-image'
+                categories = 10
+            case 'listops':
+                subpath = 'lra-listops'
+                categories = 10
+            case 'pathfinder':
+                subpath = 'lra-pathfinder32-curv_contour_length_14'
+                categories = 2
+            case 'retrieval':
+                subpath = 'lra-retrieval'
+                categories = 2
+            case 'text':
+                subpath = 'lra-text'
+                categories = 2
+
+        splitpath = 'dev' if (self.config['debug'] and split == 'train') else split 
+        filepath = f"data/lra/{subpath}.{splitpath}.pickle"
+
+        try:
+            with open(filepath, 'rb') as file:
+                data = pickle.load(file)
+        except FileNotFoundError:
+            print(f"Error: File not found at {filepath}. Please check you have the LRA data downloaded.")
+
+        for ex in data:
+            ex['input_ids'] = ex.pop('input_ids_0').tolist()
+            if 'input_ids_1' in ex:
+                ex['input_ids_1'] = ex.pop('input_ids_1').tolist()
+
+        dataset = hf_Dataset.from_list(data)
+        dataloader = DataLoader(dataset, 
+                                batch_size=self.config['training']['batch_size'], 
+                                shuffle=shuffle, 
+                                collate_fn=self.collator)
+
+        return dataloader, categories
     
+    def run_benchmark(self, backbone):
+        for task in ['image', 'listops', 'pathfinder', 'retrieval', 'text']:
+            train_dataloader, categories = self._prepare_dataloader(task, "train", shuffle=True)
+
+            model = SequenceClassifier(backbone, categories).to(self.config["hardware"]["device"])
+    
+            self.train(model, train_dataloader, task)
+            del train_dataloader
+
+            test_dataloader, _ = self._prepare_dataloader(task, "test", shuffle=False)
+            self.evaluate(model, test_dataloader, task)
+            del test_dataloader
+
+            del model
 
 ## Collators
 
@@ -484,7 +486,7 @@ class DataCollatorForTextRetrieval():
         batch_labels = self.padding_collator([{"input_ids": seq} for seq in masked_labels])["input_ids"]
 
         return {"input_ids": batch_inputs, "labels": batch_labels}
-    
+
 class DataCollatorForMemoryCopy():
     def __init__(self, tokenizer, max_length):
         self.tokenizer = tokenizer
@@ -516,4 +518,38 @@ class DataCollatorForMemoryCopy():
 
         return {"input_ids": input_ids, "labels": labels}
             
+class DataCollatorForLongRangeArena():
+    def __init__(self, tokenizer, max_length):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
 
+        self.padding_collator = DataCollatorWithPadding(
+            tokenizer=tokenizer,
+            padding="max_length",
+            max_length=max_length,
+            return_tensors="pt"
+        )
+
+    def __call__(self, examples):
+        processed_examples = []
+
+        # Process and truncate each example
+        for ex in examples:
+            if "input_ids_1" in ex:
+                half = self.max_length // 2
+                input_ids = ex["input_ids"][:half]
+                input_ids_1 = ex["input_ids_1"][:self.max_length - len(input_ids)]
+                combined = input_ids + input_ids_1
+                combined = combined[:self.max_length]
+                processed = {"input_ids": combined}
+            else:
+                processed = {"input_ids": ex["input_ids"][:self.max_length]}
+
+            processed_examples.append(processed)
+
+        padded_inputs = self.padding_collator({"input_ids": [ex["input_ids"] for ex in processed_examples]})["input_ids"]
+
+        return {
+            "input_ids": padded_inputs,
+            "labels": torch.tensor([ex["label"] for ex in examples])
+        }

@@ -7,18 +7,13 @@ parameters:
     parameters:
       name:
         values: ["rnn", "linear_attention", "hopfield_attention"]
-      dim:
-        values: [128, 256]
-      num_layers:
-        values: [2, 4, 8]
 
   training:
     parameters:
       sequence_length:
-        # values: [128, 256, 512, 1024, 2048, 4096, 8192]
-        values : [1024]
+        values : [1024, 2048, 4096, 8192]
 
   benchmark:
     parameters:
       name:
-        values: ["lambada"]  # Can add more as implemented: ["lambada", "wikitext", "memcopy", "lra"]
+        values: ["lambada", "wikitext", "memcopy", "lra"]

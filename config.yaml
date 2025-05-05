@@ -1,19 +1,19 @@
 model:
-  name: "rnn"         # Model type to use as backbone
+  name: "linear_attention"         # Model type to use as backbone
   dim: 256            # Model embedding dimension
   num_layers: 2       # Number of layers in the model
 
 training:
-  batch_size: 8       # Batch size for training and evaluation
+  batch_size: 4       # Batch size for training and evaluation
   epochs: 3           # Number of training epochs
-  sequence_length: 1024 # Maximum sequence length
-  learning_rate: 1e-3 # Learning rate for optimizer
+  sequence_length: 8192 # Maximum sequence length 1024
+  learning_rate: 5e-5 # Learning rate for optimizer
 
 hardware:
   device: "cuda"      # Device to run on (cuda/cpu)
 
 benchmark:
-  name: "memcopy"     # Options: lambada, wikitext, memcopy, lra
+  name: "lra"     # Options: lambada, wikitext, memcopy, lra
 
 logging:
   project_name: "language_model_benchmarks"

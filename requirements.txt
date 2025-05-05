@@ -5,3 +5,4 @@ argparse
 wandb
 spacy
 numpy
+pickle
