@@ -1,5 +1,7 @@
 # Hopfield
 
+[Report](https://github.com/sidijju/Hopfield/blob/main/Project_Report.pdf)
+
 ## Running a Single Experiment
 ```
 python main.py --config config.yaml
